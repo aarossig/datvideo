@@ -69,6 +69,7 @@ void EncodeRfc1662Frame(const std::vector<uint8_t>& chunk,
   uint16_t crc = datvideo::GenerateCrc16(chunk.data(), chunk.size());
   InsertRfc1662EscapedByte(crc >> 8, frame);
   InsertRfc1662EscapedByte(crc, frame);
+  frame->push_back(kRfc1662Delimiter);
 }
 
 /**
@@ -87,6 +88,76 @@ bool EncodeFile(std::FILE* in_file, std::FILE* out_file, size_t chunk_size) {
                                        frame.size(), out_file);
     if (bytes_written != frame.size()) {
       LOGE("Failed to write frame: %d", ferror(out_file));
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Decodes the supplied input file into the supplied output file, assuming
+ * RFC-1662 frames as the input.
+ */
+bool DecodeFile(std::FILE* in_file, std::FILE* out_file) {
+  // The maximum size for a given frame. This is pretty huge.
+  constexpr size_t kMaxFrameSize = 1024 * 1024;
+
+  enum class ReceiveState {
+    Reset,
+    InFrame,
+    InEscape,
+  };
+
+  uint8_t byte;
+  size_t bytes_read = 0;
+  std::vector<uint8_t> frame;
+  ReceiveState receive_state = ReceiveState::Reset;
+  while ((bytes_read = std::fread(&byte, sizeof(byte), 1, in_file)) > 0) {
+    if (receive_state == ReceiveState::Reset) {
+      if (byte == kRfc1662Delimiter) {
+        receive_state = ReceiveState::InFrame;
+      }
+    } else if (receive_state == ReceiveState::InFrame) {
+      if (byte == kRfc1662Delimiter) {
+        if (frame.size() >= sizeof(uint16_t)) {
+          uint16_t crc = ((static_cast<uint16_t>(frame[frame.size() - 2]) << 8)
+              | (frame[frame.size() - 1]));
+          uint16_t computed_crc =
+              GenerateCrc16(frame.data(), frame.size() - sizeof(uint16_t));
+          if (crc == computed_crc) {
+            size_t frame_size = frame.size() - sizeof(uint16_t);
+            size_t bytes_written = std::fwrite(
+                frame.data(), sizeof(frame[0]), frame_size, out_file);
+            if (bytes_written != frame_size) {
+              LOGE("Failed to write frame: %d", ferror(out_file));
+            }
+          } else {
+            LOGW("CRC mismatch received");
+          }
+        } else {
+          LOGW("Short frame received");
+        }
+
+        frame.clear();
+        receive_state = ReceiveState::Reset;
+      } else if (byte == kRfc1662Escape) {
+        receive_state = ReceiveState::InEscape;
+      } else if (frame.size() > kMaxFrameSize) {
+        LOGW("Long frame received");
+        frame.clear();
+        receive_state = ReceiveState::Reset;
+      } else {
+        frame.push_back(byte);
+      }
+    } else if (receive_state == ReceiveState::InEscape) {
+      if (byte == kRfc1662Delimiter || byte == kRfc1662Escape) {
+        frame.push_back(byte);
+        receive_state = ReceiveState::InFrame;
+      } else {
+        LOGW("Invalid escape sequence received");
+        frame.clear();
+        receive_state = ReceiveState::Reset;
+      }
     }
   }
 
@@ -138,7 +209,7 @@ int main(int argc, char **argv) {
   } else if (encode_mode_arg.getValue()) {
     result = datvideo::EncodeFile(in_file, out_file, chunk_size_arg.getValue());
   } else if (decode_mode_arg.getValue()) {
-    LOGE("Decode not implemented");
+    result = datvideo::DecodeFile(in_file, out_file);
   }
 
   return (result ? 0 : -1);
