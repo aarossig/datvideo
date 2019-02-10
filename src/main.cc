@@ -14,7 +14,9 @@
  * limitations under the License.
  */
 
+#include <fstream>
 #include <string>
+#include <vector>
 
 #include <tclap/CmdLine.h>
 
@@ -28,6 +30,28 @@ constexpr char kVersion[] = "0.0.1";
 
 // The default size of an MPEG-TS frame with no error correction.
 constexpr size_t kMpegTsFrameSize = 188;
+
+/**
+ * Encodes the supplied input file into the supplied output file as RFC-1662
+ * frames containing chunk_size worth of file each.
+ */
+bool EncodeFile(std::FILE* in_file, std::FILE* out_file, size_t chunk_size) {
+  size_t bytes_read = 0;
+  std::vector<char> buf(chunk_size);
+  while ((bytes_read = std::fread(buf.data(), sizeof(buf[0]),
+                                  chunk_size, in_file)) > 0) {
+
+    // TODO: Encode into RFC-1662 frames.
+
+    size_t bytes_written = std::fwrite(buf.data(), sizeof(buf[0]),
+                                       bytes_read, out_file);
+    if (bytes_written != bytes_read /* TODO: frame_size */) {
+      LOGE("Failed to write frame: %d", ferror(out_file));
+    }
+  }
+
+  return true;
+}
 
 int main(int argc, char **argv) {
   TCLAP::CmdLine cmd(kDescription, ' ', kVersion);
@@ -50,14 +74,30 @@ int main(int argc, char **argv) {
       false /* req */, kMpegTsFrameSize, "byte count", cmd);
   cmd.parse(argc, argv);
 
-  int result = 0;
-  if (encode_mode_arg.getValue()) {
-    LOGE("Encode not implemented");
-    result = -1;
-  } else if (decode_mode_arg.getValue()) {
-    LOGE("Decode not implemented");
-    result = -1;
+  std::FILE *in_file = stdin;
+  if (!in_file_arg.getValue().empty()) {
+    in_file = fopen(in_file_arg.getValue().c_str(), "rb");
+  } else {
+    std::freopen(nullptr, "rb", stdin);
   }
 
-  return result;
+  std::FILE *out_file = stdout;
+  if (!out_file_arg.getValue().empty()) {
+    out_file = fopen(out_file_arg.getValue().c_str(), "wb");
+  } else {
+    std::freopen(nullptr, "wb", stdout);
+  }
+
+  bool result = false;
+  if (!in_file) {
+    LOGE("Failed to open input file");
+  } else if (!out_file) {
+    LOGE("Failed to open output file");
+  } else if (encode_mode_arg.getValue()) {
+    result = EncodeFile(in_file, out_file, chunk_size_arg.getValue());
+  } else if (decode_mode_arg.getValue()) {
+    LOGE("Decode not implemented");
+  }
+
+  return (result ? 0 : -1);
 }
