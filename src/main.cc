@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <string>
+
 #include <tclap/CmdLine.h>
 
 #include "log.h"
@@ -24,14 +26,28 @@ constexpr char kDescription[] = "A tool for storing binary data on DAT tapes.";
 // The version of the program.
 constexpr char kVersion[] = "0.0.1";
 
+// The default size of an MPEG-TS frame with no error correction.
+constexpr size_t kMpegTsFrameSize = 188;
+
 int main(int argc, char **argv) {
   TCLAP::CmdLine cmd(kDescription, ' ', kVersion);
 
   TCLAP::SwitchArg encode_mode_arg(
-      "", "encode", "Put the tool in encode mode.", false /* req */);
+      "e", "encode", "Put the tool in encode mode.", false /* req */);
   TCLAP::SwitchArg decode_mode_arg(
-      "", "decode", "Put the tool in decode mode.", false /* req */);
+      "d", "decode", "Put the tool in decode mode.", false /* req */);
   cmd.xorAdd(encode_mode_arg, decode_mode_arg);
+
+  TCLAP::ValueArg<std::string> in_file_arg(
+      "i", "input_file", "The input file to use for the current operation. "
+      "Do not specify for stdin.", false /* req */, "", "path", cmd);
+  TCLAP::ValueArg<std::string> out_file_arg(
+      "o", "output_file", "The output file to use for the current operation. "
+      "Do not specify for stdout.", false /* req */, "", "path", cmd);
+  TCLAP::ValueArg<size_t> chunk_size_arg(
+      "s", "chunk_size", "The size of chunks to split the file into. "
+      "This is useful for streaming operations, like audio/video.",
+      false /* req */, kMpegTsFrameSize, "byte count", cmd);
   cmd.parse(argc, argv);
 
   int result = 0;
