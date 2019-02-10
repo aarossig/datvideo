@@ -34,6 +34,9 @@ constexpr char kVersion[] = "0.0.1";
 // The default size of an MPEG-TS frame with no error correction.
 constexpr size_t kMpegTsFrameSize = 188;
 
+// The default size of the decode buffer before writing to the out file.
+constexpr size_t kDefaultBufferSize = 100 * 1024;
+
 }  // namespace 
 
 namespace datvideo {
@@ -95,10 +98,27 @@ bool EncodeFile(std::FILE* in_file, std::FILE* out_file, size_t chunk_size) {
 }
 
 /**
+ * Validates the CRC of the supplied frame.
+ */
+bool ValidateFrame(const std::vector<uint8_t>& frame) {
+  bool crc_is_valid = false;
+  if (frame.size() >= sizeof(uint16_t)) {
+    uint16_t crc = ((static_cast<uint16_t>(frame[frame.size() - 2]) << 8)
+        | (frame[frame.size() - 1]));
+    size_t frame_size = frame.size() - sizeof(uint16_t);
+    crc_is_valid = (crc == GenerateCrc16(frame.data(), frame_size));
+  } else {
+    LOGW("Short frame received");
+  }
+
+  return crc_is_valid;
+}
+
+/**
  * Decodes the supplied input file into the supplied output file, assuming
  * RFC-1662 frames as the input.
  */
-bool DecodeFile(std::FILE* in_file, std::FILE* out_file) {
+bool DecodeFile(std::FILE* in_file, std::FILE* out_file, size_t buffer_size) {
   // The maximum size for a given frame. This is pretty huge.
   constexpr size_t kMaxFrameSize = 1024 * 1024;
 
@@ -110,6 +130,8 @@ bool DecodeFile(std::FILE* in_file, std::FILE* out_file) {
 
   uint8_t byte;
   size_t bytes_read = 0;
+  bool buffer_filled = false;
+  std::vector<uint8_t> buffer;
   std::vector<uint8_t> frame;
   ReceiveState receive_state = ReceiveState::Reset;
   while ((bytes_read = std::fread(&byte, sizeof(byte), 1, in_file)) > 0) {
@@ -119,23 +141,31 @@ bool DecodeFile(std::FILE* in_file, std::FILE* out_file) {
       }
     } else if (receive_state == ReceiveState::InFrame) {
       if (byte == kRfc1662Delimiter) {
-        if (frame.size() >= sizeof(uint16_t)) {
-          uint16_t crc = ((static_cast<uint16_t>(frame[frame.size() - 2]) << 8)
-              | (frame[frame.size() - 1]));
-          uint16_t computed_crc =
-              GenerateCrc16(frame.data(), frame.size() - sizeof(uint16_t));
-          if (crc == computed_crc) {
+        if (ValidateFrame(frame)) {
+          if (!buffer_filled) {
+            buffer.insert(buffer.end(), frame.begin(),
+                          frame.end() - sizeof(uint16_t));
+            if (buffer.size() >= buffer_size) {
+              buffer_filled = true;
+              size_t bytes_written = std::fwrite(
+                  buffer.data(), sizeof(buffer[0]), buffer.size(), out_file);
+              if (bytes_written != buffer.size()) {
+                LOGE("Failed to write buffered frames: %d", ferror(out_file));
+              }
+
+              buffer.clear();
+            }
+          } else {
             size_t frame_size = frame.size() - sizeof(uint16_t);
             size_t bytes_written = std::fwrite(
                 frame.data(), sizeof(frame[0]), frame_size, out_file);
             if (bytes_written != frame_size) {
-              LOGE("Failed to write frame: %d", ferror(out_file));
+              LOGE("Failed to write buffered frames: %d", ferror(out_file));
             }
-          } else {
-            LOGW("CRC mismatch received");
           }
         } else {
-          LOGW("Short frame received");
+          LOGW("CRC mismatch received");
+          buffer_filled = false;
         }
 
         frame.clear();
@@ -145,6 +175,7 @@ bool DecodeFile(std::FILE* in_file, std::FILE* out_file) {
       } else if (frame.size() > kMaxFrameSize) {
         LOGW("Long frame received");
         frame.clear();
+        buffer_filled = false;
         receive_state = ReceiveState::Reset;
       } else {
         frame.push_back(byte);
@@ -156,6 +187,7 @@ bool DecodeFile(std::FILE* in_file, std::FILE* out_file) {
       } else {
         LOGW("Invalid escape sequence received");
         frame.clear();
+        buffer_filled = false;
         receive_state = ReceiveState::Reset;
       }
     }
@@ -185,6 +217,11 @@ int main(int argc, char **argv) {
       "s", "chunk_size", "The size of chunks to split the file into. "
       "This is useful for streaming operations, like audio/video.",
       false /* req */, kMpegTsFrameSize, "byte count", cmd);
+  TCLAP::ValueArg<size_t> buffer_size_arg(
+      "n", "buffer_size", "The amount of data to buffer before writing to the "
+      "out file. This is useful for streaming operations to ensure that there "
+      " is always data available to read for the client without blocking.",
+      false /* req */, kDefaultBufferSize, "byte count", cmd);
   cmd.parse(argc, argv);
 
   std::FILE *in_file = stdin;
@@ -209,7 +246,7 @@ int main(int argc, char **argv) {
   } else if (encode_mode_arg.getValue()) {
     result = datvideo::EncodeFile(in_file, out_file, chunk_size_arg.getValue());
   } else if (decode_mode_arg.getValue()) {
-    result = datvideo::DecodeFile(in_file, out_file);
+    result = datvideo::DecodeFile(in_file, out_file, buffer_size_arg.getValue());
   }
 
   return (result ? 0 : -1);
