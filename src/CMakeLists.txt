@@ -6,4 +6,5 @@
 
 add_executable(datvideo
   main.cc
+  crc16.cc
 )

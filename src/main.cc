@@ -20,7 +20,10 @@
 
 #include <tclap/CmdLine.h>
 
-#include "log.h"
+#include "datvideo/crc16.h"
+#include "datvideo/log.h"
+
+namespace {
 
 // A description of the program.
 constexpr char kDescription[] = "A tool for storing binary data on DAT tapes.";
@@ -31,27 +34,66 @@ constexpr char kVersion[] = "0.0.1";
 // The default size of an MPEG-TS frame with no error correction.
 constexpr size_t kMpegTsFrameSize = 188;
 
+}  // namespace 
+
+namespace datvideo {
+
+//! The delimiter byte to separate frames.
+constexpr uint8_t kRfc1662Delimiter = 0x7e;
+
+//! The escape byte to escape delimiters and escapes themselves.
+constexpr uint8_t kRfc1662Escape = 0x7d;
+
+/**
+ * Inserts the supplied byte into the frame, escaping if necessary.
+ */
+void InsertRfc1662EscapedByte(uint8_t byte, std::vector<uint8_t>* frame) {
+  if (byte == kRfc1662Delimiter || byte == kRfc1662Escape) {
+    frame->push_back(kRfc1662Escape);
+  }
+
+  frame->push_back(byte);
+}
+
+/**
+ * Encodes the supplied chunk into an RFC1662 frame.
+ */
+void EncodeRfc1662Frame(const std::vector<uint8_t>& chunk,
+                        std::vector<uint8_t>* frame) {
+  frame->clear();
+  frame->push_back(kRfc1662Delimiter);
+  for (uint8_t byte : chunk) {
+    InsertRfc1662EscapedByte(byte, frame);
+  }
+
+  uint16_t crc = datvideo::GenerateCrc16(chunk.data(), chunk.size());
+  InsertRfc1662EscapedByte(crc >> 8, frame);
+  InsertRfc1662EscapedByte(crc, frame);
+}
+
 /**
  * Encodes the supplied input file into the supplied output file as RFC-1662
  * frames containing chunk_size worth of file each.
  */
 bool EncodeFile(std::FILE* in_file, std::FILE* out_file, size_t chunk_size) {
   size_t bytes_read = 0;
-  std::vector<char> buf(chunk_size);
+  std::vector<uint8_t> buf(chunk_size);
+  std::vector<uint8_t> frame;
   while ((bytes_read = std::fread(buf.data(), sizeof(buf[0]),
                                   chunk_size, in_file)) > 0) {
-
-    // TODO: Encode into RFC-1662 frames.
-
-    size_t bytes_written = std::fwrite(buf.data(), sizeof(buf[0]),
-                                       bytes_read, out_file);
-    if (bytes_written != bytes_read /* TODO: frame_size */) {
+    buf.resize(bytes_read);
+    EncodeRfc1662Frame(buf, &frame);
+    size_t bytes_written = std::fwrite(frame.data(), sizeof(frame[0]),
+                                       frame.size(), out_file);
+    if (bytes_written != frame.size()) {
       LOGE("Failed to write frame: %d", ferror(out_file));
     }
   }
 
   return true;
 }
+
+}  // namespace datvideo
 
 int main(int argc, char **argv) {
   TCLAP::CmdLine cmd(kDescription, ' ', kVersion);
@@ -94,7 +136,7 @@ int main(int argc, char **argv) {
   } else if (!out_file) {
     LOGE("Failed to open output file");
   } else if (encode_mode_arg.getValue()) {
-    result = EncodeFile(in_file, out_file, chunk_size_arg.getValue());
+    result = datvideo::EncodeFile(in_file, out_file, chunk_size_arg.getValue());
   } else if (decode_mode_arg.getValue()) {
     LOGE("Decode not implemented");
   }
