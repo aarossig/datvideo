@@ -16,6 +16,7 @@ a DAT tape - but that is why it exists in the first place.
 Build this tree with the usual cmake flow:
 
     mkdir build
+    cd build
     cmake ..
     make -j`nproc`
 
